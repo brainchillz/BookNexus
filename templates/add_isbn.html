@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Add by ISBN — {{ site_title }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <h1 class="h3 mb-1">Add by ISBN</h1>
+        <p class="text-muted small mb-4">
+            Type an ISBN or scan the barcode on the back of the book.
+            (Prefer typing? The <a href="/books/add">manual form</a> is unchanged.)
+        </p>
+
+        <div class="input-group mb-2">
+            <input type="text" id="isbn-input" class="form-control form-control-lg"
+                   placeholder="e.g. 9780671746728" inputmode="numeric" autofocus>
+            <button type="button" id="fetch-btn" class="btn btn-primary">Fetch</button>
+            <button type="button" id="scan-btn" class="btn btn-outline-secondary">📷 Scan</button>
+        </div>
+        <div id="lookup-status" class="small text-muted mb-3"></div>
+
+        <div id="owned-box" class="alert alert-warning d-none">
+            <strong>Already in the library:</strong>
+            <ul class="mb-0" id="owned-list"></ul>
+        </div>
+
+        <form method="post" action="/books/add" id="result-card" class="card shadow-sm d-none">
+            <div class="card-body p-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="row g-3">
+                    <div class="col-4 text-center">
+                        <img id="r-cover" class="img-fluid rounded shadow-sm d-none" alt="Cover">
+                        <div id="r-no-cover" class="text-muted small border rounded py-4 px-2 d-none">No cover found</div>
+                    </div>
+                    <div class="col-8">
+                        <div class="mb-2">
+                            <label class="form-label small mb-0">Title</label>
+                            <input type="text" name="title" id="r-title" class="form-control form-control-sm" required>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small mb-0">Author <span class="text-muted">(Last, First)</span></label>
+                            <input type="text" name="author" id="r-author" class="form-control form-control-sm"
+                                   list="author-list" required>
+                            <datalist id="author-list"></datalist>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small mb-0">Series <span class="text-muted">(optional — Open Library doesn't know series)</span></label>
+                            <input type="text" name="series" class="form-control form-control-sm" list="series-list">
+                            <datalist id="series-list"></datalist>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small mb-0">Series #</label>
+                            <input type="text" name="series_num" class="form-control form-control-sm" style="max-width:100px">
+                        </div>
+                        <input type="hidden" name="isbn" id="r-isbn">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-success w-100 mt-3">Add to library</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Barcode scanner modal -->
+<div class="modal fade" id="scan-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Point the camera at the barcode</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-2">
+                <video id="scan-video" class="w-100 rounded" muted playsinline></video>
+                <div id="scan-status" class="small text-muted text-center mt-2">Starting camera…</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+$(function() {
+    function lookup(isbn) {
+        isbn = (isbn || $('#isbn-input').val()).replace(/[\s-]/g, '');
+        if (!isbn) return;
+        $('#isbn-input').val(isbn);
+        $('#lookup-status').text('Looking up ' + isbn + '…');
+        $('#result-card, #owned-box').addClass('d-none');
+        $.getJSON('/api/isbn/' + encodeURIComponent(isbn)).done(function(r) {
+            if (r.owned && r.owned.length) {
+                $('#owned-list').empty();
+                r.owned.forEach(function(b) {
+                    $('#owned-list').append($('<li>').text(b.title + ' — ' + b.author));
+                });
+                $('#owned-box').removeClass('d-none');
+            }
+            if (r.found) {
+                $('#lookup-status').text(r.owned.length ? '' : 'Found it — review and add:');
+                $('#r-title').val(r.meta.title);
+                $('#r-author').val(r.meta.author);
+                $('#r-isbn').val(r.isbn);
+                if (r.meta.cover_url) {
+                    $('#r-cover').attr('src', r.meta.cover_url).removeClass('d-none');
+                    $('#r-no-cover').addClass('d-none');
+                } else {
+                    $('#r-cover').addClass('d-none');
+                    $('#r-no-cover').removeClass('d-none');
+                }
+                $('#result-card').removeClass('d-none');
+            } else {
+                $('#lookup-status').text(r.owned.length ? '' :
+                    'Open Library doesn’t know this ISBN — use the manual form.');
+            }
+        }).fail(function(xhr) {
+            $('#lookup-status').text(xhr.status === 400 ?
+                'That doesn’t look like a valid ISBN.' : 'Lookup failed — try again.');
+        });
+    }
+
+    $('#fetch-btn').on('click', function() { lookup(); });
+    $('#isbn-input').on('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); lookup(); }
+    });
+
+    // Autocomplete datalists (same sources as the manual form)
+    $.getJSON('/api/autocomplete/authors').done(function(a) {
+        $('#author-list').append(a.map(function(v) { return $('<option>').attr('value', v)[0]; }));
+    });
+    $.getJSON('/api/autocomplete/series').done(function(s) {
+        $('#series-list').append(s.map(function(v) { return $('<option>').attr('value', v)[0]; }));
+    });
+
+    // ── Camera barcode scanning (EAN-13 == ISBN-13 on books) ──
+    var reader = null;
+    var modalEl = document.getElementById('scan-modal');
+    var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+    $('#scan-btn').on('click', function() {
+        modal.show();
+    });
+
+    modalEl.addEventListener('shown.bs.modal', function() {
+        $('#scan-status').text('Starting camera…');
+        reader = new ZXing.BrowserMultiFormatReader();
+        reader.decodeFromVideoDevice(null, 'scan-video', function(result, err) {
+            if (result) {
+                var code = result.getText();
+                // Books use 978/979-prefixed EAN-13; anything else is a price/UPC code
+                if (/^97[89]\d{10}$/.test(code)) {
+                    modal.hide();
+                    lookup(code);
+                } else {
+                    $('#scan-status').text('That barcode isn’t an ISBN (' + code +
+                        ') — on older paperbacks the ISBN barcode is inside the front cover.');
+                }
+            }
+        }).catch(function(e) {
+            $('#scan-status').text('Camera unavailable: ' + e);
+        });
+        $('#scan-status').text('Scanning…');
+    });
+
+    modalEl.addEventListener('hidden.bs.modal', function() {
+        if (reader) { reader.reset(); reader = null; }
+    });
+});
+</script>
+{% endblock %}

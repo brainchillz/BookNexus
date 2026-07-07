@@ -48,6 +48,9 @@
                         <a class="nav-link" href="/books/add">+ Add Book</a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/books/add-isbn' %}active{% endif %}" href="/books/add-isbn">📷 ISBN</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="/admin/export">Export CSV</a>
                     </li>
                     <li class="nav-item">

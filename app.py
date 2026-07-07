@@ -284,6 +284,96 @@ def _lookup_isbn(isbn):
         return None, None
 
 
+def _isbn_variants(isbn):
+    """The ISBN plus its ISBN-10<->13 twin, so owned-checks match either form."""
+    variants = {isbn}
+    if len(isbn) == 13 and isbn.startswith('978') and isbn.isdigit():
+        body = isbn[3:12]
+        check = sum((i + 1) * int(d) for i, d in enumerate(body)) % 11
+        variants.add(body + ('X' if check == 10 else str(check)))
+    elif len(isbn) == 10:
+        body = '978' + isbn[:9]
+        if body.isdigit():
+            check = (10 - sum((1 if i % 2 == 0 else 3) * int(d)
+                              for i, d in enumerate(body)) % 10) % 10
+            variants.add(body + str(check))
+    return variants
+
+
+def _flip_author(name):
+    """'Douglas Adams' -> 'Adams, Douglas' (the format this library uses)."""
+    parts = (name or '').strip().split()
+    if len(parts) >= 2 and ',' not in name:
+        return f"{parts[-1]}, {' '.join(parts[:-1])}"
+    return name or ''
+
+
+def _fetch_ol_json(path):
+    req = urllib.request.Request(
+        f'https://openlibrary.org{path}', headers=_OL_HEADERS)
+    with urllib.request.urlopen(req, timeout=6) as resp:
+        return json.load(resp)
+
+
+def api_isbn_lookup(isbn):
+    """Metadata + already-owned check for the Add-by-ISBN page."""
+    clean = _clean_isbn(isbn)
+    if not clean:
+        return jsonify({'error': 'Not a valid ISBN'}), 400
+
+    # Owned check by ISBN (either 10/13 form) — works even if Open Library is down
+    variants = list(_isbn_variants(clean))
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            placeholders = ', '.join(['%s'] * len(variants))
+            cur.execute(
+                f"SELECT id, author, title FROM books WHERE isbn IN ({placeholders})",
+                variants)
+            owned = cur.fetchall()
+
+        meta = None
+        try:
+            data = _fetch_ol_json(f'/isbn/{clean}.json')
+            author_name = ''
+            authors = data.get('authors') or []
+            if authors and authors[0].get('key'):
+                try:
+                    author_name = _fetch_ol_json(
+                        f"{authors[0]['key']}.json").get('name', '')
+                except Exception:
+                    pass
+            cover_id = (data.get('covers') or [None])[0]
+            meta = {
+                'title': data.get('title', ''),
+                'author': _flip_author(author_name),
+                'cover_url': (f'https://covers.openlibrary.org/b/id/{cover_id}-M.jpg'
+                              if cover_id else None),
+            }
+        except Exception:
+            pass
+
+        # Second owned-check net: same title+author already entered without an ISBN
+        if meta and meta['title'] and not owned:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, author, title FROM books "
+                    "WHERE LOWER(title) = LOWER(%s) AND author LIKE %s LIMIT 5",
+                    (meta['title'],
+                     f"%{meta['author'].split(',')[0]}%" if meta['author'] else '%'))
+                owned = cur.fetchall()
+    finally:
+        conn.close()
+
+    return jsonify({
+        'isbn': clean,
+        'found': meta is not None,
+        'meta': meta,
+        'owned': [{'id': r['id'], 'author': r['author'] or '',
+                   'title': r['title'] or ''} for r in owned],
+    })
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -800,6 +890,16 @@ def import_books_confirm():
     flash(f'Imported {staged} books. The previous data is kept as table '
           f'"books_old" until the next import.', 'success')
     return redirect(url_for('all_books'))
+
+
+app.add_url_rule('/api/isbn/<isbn>', 'api_isbn_lookup',
+                 login_required(api_isbn_lookup))
+
+
+@app.route('/books/add-isbn')
+@login_required
+def add_by_isbn():
+    return render_template('add_isbn.html')
 
 
 @app.route('/books/add', methods=['GET', 'POST'])
