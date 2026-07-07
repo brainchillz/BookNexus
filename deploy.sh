@@ -43,7 +43,9 @@ $DC up -d --build
 echo ""
 PORT=$(grep -E '^APP_PORT=' .env | cut -d= -f2 || true)
 PORT=${PORT:-8000}
-echo "  App is running at http://localhost:${PORT}"
+echo "  App is running at https://localhost:${PORT}"
+    echo "  (HTTPS is on by default with a self-signed certificate — your"
+    echo "   browser will warn once; manage certificates in Settings)"
 echo "  First run? It will walk you through creating the admin account."
 echo ""
 echo "Useful commands:"
