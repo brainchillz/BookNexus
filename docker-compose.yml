@@ -1,5 +1,10 @@
 services:
   web:
+    # Prebuilt image published by GitHub Actions on every push to main
+    # (amd64 + arm64). `docker compose pull` fetches it — no local build.
+    # The build: section remains for developing from source
+    # (`docker compose up -d --build` or `./deploy.sh --build`).
+    image: ghcr.io/brainchillz/booknexus:latest
     build: .
     restart: unless-stopped
     ports:

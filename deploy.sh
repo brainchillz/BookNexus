@@ -37,8 +37,21 @@ elif [ ! -w data ] || ! chown 10001:10001 data 2>/dev/null; then
     echo "the database, run: sudo chown 10001:10001 data"
 fi
 
-echo "Building and starting BookNexus..."
-$DC up -d --build
+# Default: pull the prebuilt image from ghcr.io (fast, no build).
+# ./deploy.sh --build compiles the image locally from this source tree
+# instead (for development or if the registry is unreachable).
+if [ "${1:-}" = "--build" ]; then
+    echo "Building BookNexus from source and starting..."
+    $DC up -d --build
+else
+    echo "Pulling the prebuilt BookNexus image and starting..."
+    if ! $DC pull web 2>/dev/null; then
+        echo "Pull failed (offline or registry unavailable) — building locally instead."
+        $DC up -d --build
+    else
+        $DC up -d
+    fi
+fi
 
 echo ""
 PORT=$(grep -E '^APP_PORT=' .env | cut -d= -f2 || true)

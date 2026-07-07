@@ -63,8 +63,13 @@ cp .env.example .env
 ./deploy.sh
 ```
 
-Open `http://localhost:8000` — the setup wizard walks you through creating
-the admin account and naming your library. That's the whole install.
+No build step: `deploy.sh` pulls the prebuilt image from
+`ghcr.io/brainchillz/booknexus` (amd64 + arm64, published automatically from
+this repo). Use `./deploy.sh --build` to build from source instead.
+
+Open `https://localhost:8000` — accept the one-time self-signed-certificate
+warning, and the setup wizard walks you through creating the admin account
+and naming your library. That's the whole install.
 
 Your library lives in `./data/books.db` on the host. Stopping or rebuilding
 the container never touches it.
