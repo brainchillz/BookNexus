@@ -42,7 +42,7 @@ fi
 # data-repo export); otherwise the books.sql shipped in this directory is
 # used as-is. Either way it is only imported when the MySQL volume is
 # brand new.
-SEED_URL=$(grep -E '^SEED_DATA_URL=' .env | cut -d= -f2-)
+SEED_URL=$(grep -E '^SEED_DATA_URL=' .env | cut -d= -f2- || true)
 if [ -n "${SEED_URL:-}" ]; then
     if curl -fsSL --connect-timeout 10 "$SEED_URL" -o books.sql.new && [ -s books.sql.new ]; then
         mv books.sql.new books.sql
