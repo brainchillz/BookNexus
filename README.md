@@ -173,21 +173,24 @@ Log in via **Admin** in the navbar, then:
 
 ## HTTPS
 
-Set in `.env` and restart:
+**On by default.** BookNexus generates a self-signed certificate on first
+boot and serves HTTPS immediately — because the camera barcode scanner
+requires a secure origin, and a library app you can't scan into is half an
+app. Your browser will warn once per device about the self-signed
+certificate; accept it and everything works, fully encrypted.
 
-```ini
-TLS_CERT=certs/fullchain.pem
-TLS_KEY=certs/privkey.pem
-```
+Everything is managed from **Settings → HTTPS certificate** in the app:
 
-Gunicorn then serves HTTPS directly (Secure cookies + HSTS switch on
-automatically). In Docker, make the key readable by the container user:
-`sudo chown 10001:10001 certs/privkey.pem && sudo chmod 400 certs/privkey.pem`.
-Alternatively run behind a TLS-terminating reverse proxy with `HTTPS=true`
-and `PROXY_FIX=true`.
+- **Install certificate** — upload a real cert (PEM full chain) + private
+  key to make the browser warning go away. Validated before it goes live;
+  the server hot-reloads in seconds.
+- **Regenerate self-signed** — new 10-year self-signed pair, with the host
+  you're currently using in its subject-alternative names.
+- **Disable HTTPS** — for setups behind a TLS-terminating reverse proxy,
+  prefer `HTTPS=true` + `PROXY_FIX=true` in `.env` instead.
 
-Camera barcode scanning needs one of these — browsers require a secure
-origin for camera access (except on `localhost`).
+Advanced: set `TLS_CERT`/`TLS_KEY` in `.env` to manage cert files yourself
+(the Settings page then shows them as environment-managed).
 
 ---
 

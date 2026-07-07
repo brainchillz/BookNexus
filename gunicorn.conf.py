@@ -1,18 +1,19 @@
-"""Gunicorn config shared by the Docker image and the bare-metal systemd unit.
+"""Gunicorn config shared by the Docker image and bare-metal runs.
 
-When TLS_CERT/TLS_KEY are set in the environment (or .env), gunicorn serves
-HTTPS directly; otherwise it serves plain HTTP as before.
+TLS is on by default: a self-signed certificate is generated on first boot
+when nothing else is configured (see tls_config.py for the priority order).
+The Settings page swaps certificates at runtime by signaling gunicorn to
+gracefully reload (SIGHUP), which re-evaluates this file.
 """
-import os
-
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from tls_config import resolve_tls  # noqa: E402 — needs env loaded first
 
 bind = '0.0.0.0:8000'
 workers = 4
 timeout = 60
 accesslog = '-'
 
-certfile = os.environ.get('TLS_CERT') or None
-keyfile = os.environ.get('TLS_KEY') or None
+certfile, keyfile = resolve_tls()

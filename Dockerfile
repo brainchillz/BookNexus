@@ -2,12 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# openssl CLI: self-signed certificate generation + cert introspection
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies first so this layer is cached on rebuilds
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app.py gunicorn.conf.py export_data.py ./
+COPY app.py gunicorn.conf.py tls_config.py export_data.py ./
 COPY templates/ templates/
 COPY static/ static/
 
