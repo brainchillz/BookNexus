@@ -10,7 +10,8 @@ cd "$(dirname "$0")"
 mkdir -p backups
 ts=$(date +%Y%m%d-%H%M%S)
 
-get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^'//; s/'\$//"; }
+# "|| true": a variable missing from .env must not kill the script (set -e)
+get_env() { { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^'//; s/'\$//"; } || true; }
 
 DB_PATH=$(get_env DB_PATH)
 DB_PATH=${DB_PATH:-data/books.db}
