@@ -3,19 +3,19 @@ import io
 import os
 import re
 import json
+import sqlite3
 import time
 import hmac
 import secrets
 import threading
 import urllib.request
 from collections import defaultdict
+from contextlib import closing
 from datetime import datetime
 from flask import (Flask, render_template, request, jsonify,
                    redirect, url_for, session, flash, abort, Response)
 from functools import wraps
 from urllib.parse import quote, urlparse, urljoin
-import pymysql
-import pymysql.cursors
 from dotenv import load_dotenv
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -42,14 +42,50 @@ if os.environ.get('PROXY_FIX', '').lower() == 'true':
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', 'localhost'),
-    'user': os.environ.get('DB_USER', 'root'),
-    'password': os.environ.get('DB_PASSWORD', ''),
-    'database': os.environ.get('DB_NAME', 'books'),
-    'charset': 'utf8mb4',
-    'cursorclass': pymysql.cursors.DictCursor,
-}
+# SQLite database file. The schema is created automatically on first run —
+# no server, no seed file: a brand-new install starts with an empty library.
+DB_PATH = os.environ.get('DB_PATH', 'data/books.db')
+
+_BOOKS_COLUMNS_DDL = """
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    author TEXT,
+    title TEXT,
+    series TEXT,
+    series_num TEXT,
+    isbn TEXT,
+    cover_id INTEGER,
+    ol_key TEXT,
+    synopsis TEXT
+"""
+
+_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS books ({_BOOKS_COLUMNS_DDL});
+CREATE TABLE IF NOT EXISTS settings (
+    name TEXT NOT NULL PRIMARY KEY,
+    value TEXT
+);
+"""
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db():
+    os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+    conn = get_db()
+    try:
+        # WAL: readers and the (single) writer never block each other
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.executescript(_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_init_db()
 
 # Admin credentials live in the DB settings table (written by the first-run
 # setup wizard or the admin settings page) and take precedence. The .env
@@ -58,7 +94,7 @@ DB_CONFIG = {
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
 ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH', '')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '')
-DEFAULT_SITE_TITLE = os.environ.get('SITE_NAME', "Cindy's Book Collection")
+DEFAULT_SITE_TITLE = os.environ.get('SITE_NAME', 'BookNexus')
 
 # Settings cache: one tiny query per worker per TTL; forced refresh on writes.
 _SETTINGS_TTL = 30
@@ -75,15 +111,9 @@ def _load_settings(force: bool = False) -> dict:
     try:
         conn = get_db()
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "CREATE TABLE IF NOT EXISTS settings ("
-                    "  name VARCHAR(64) NOT NULL PRIMARY KEY,"
-                    "  value TEXT"
-                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+            with closing(conn.cursor()) as cur:
                 cur.execute("SELECT name, value FROM settings")
                 data = {r['name']: r['value'] for r in cur.fetchall()}
-            conn.commit()
         finally:
             conn.close()
     except Exception:
@@ -99,11 +129,11 @@ def _load_settings(force: bool = False) -> dict:
 def _save_settings(**values) -> None:
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             for name, value in values.items():
                 cur.execute(
-                    "INSERT INTO settings (name, value) VALUES (%s, %s) "
-                    "ON DUPLICATE KEY UPDATE value = VALUES(value)",
+                    "INSERT INTO settings (name, value) VALUES (?, ?) "
+                    "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
                     (name, value))
         conn.commit()
     finally:
@@ -214,10 +244,6 @@ def urlencode_filter(s):
     return quote(str(s), safe='')
 
 
-def get_db():
-    return pymysql.connect(**DB_CONFIG)
-
-
 _OL_HEADERS = {'User-Agent': 'BookDatabaseApp/1.0 (personal library)'}
 
 # Failed synopsis fetches aren't cached in the DB, so without a cooldown every
@@ -325,8 +351,8 @@ def api_isbn_lookup(isbn):
     variants = list(_isbn_variants(clean))
     conn = get_db()
     try:
-        with conn.cursor() as cur:
-            placeholders = ', '.join(['%s'] * len(variants))
+        with closing(conn.cursor()) as cur:
+            placeholders = ', '.join(['?'] * len(variants))
             cur.execute(
                 f"SELECT id, author, title FROM books WHERE isbn IN ({placeholders})",
                 variants)
@@ -355,10 +381,10 @@ def api_isbn_lookup(isbn):
 
         # Second owned-check net: same title+author already entered without an ISBN
         if meta and meta['title'] and not owned:
-            with conn.cursor() as cur:
+            with closing(conn.cursor()) as cur:
                 cur.execute(
                     "SELECT id, author, title FROM books "
-                    "WHERE LOWER(title) = LOWER(%s) AND author LIKE %s LIMIT 5",
+                    "WHERE LOWER(title) = LOWER(?) AND author LIKE ? LIMIT 5",
                     (meta['title'],
                      f"%{meta['author'].split(',')[0]}%" if meta['author'] else '%'))
                 owned = cur.fetchall()
@@ -410,26 +436,26 @@ def api_books():
 
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute("SELECT COUNT(*) as cnt FROM books")
             total = cur.fetchone()['cnt']
 
             if search:
                 like = f'%{search}%'
-                where = "WHERE author LIKE %s OR title LIKE %s OR series LIKE %s"
+                where = "WHERE author LIKE ? OR title LIKE ? OR series LIKE ?"
                 params = [like, like, like]
                 cur.execute(f"SELECT COUNT(*) as cnt FROM books {where}", params)
                 filtered = cur.fetchone()['cnt']
                 cur.execute(
                     f"SELECT id, author, title, series, series_num FROM books {where} "
-                    f"ORDER BY {order_col} {order_dir} LIMIT %s OFFSET %s",
+                    f"ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
                     params + [length, start]
                 )
             else:
                 filtered = total
                 cur.execute(
                     f"SELECT id, author, title, series, series_num FROM books "
-                    f"ORDER BY {order_col} {order_dir} LIMIT %s OFFSET %s",
+                    f"ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?",
                     [length, start]
                 )
             rows = cur.fetchall()
@@ -459,9 +485,10 @@ def api_books():
 def api_book_detail(book_id):
     conn = get_db()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM books WHERE id = %s", (book_id,))
+        with closing(conn.cursor()) as cur:
+            cur.execute("SELECT * FROM books WHERE id = ?", (book_id,))
             book = cur.fetchone()
+        book = dict(book) if book else None
         if not book:
             abort(404)
         # Lazily fetch and cache the synopsis on first view
@@ -470,8 +497,8 @@ def api_book_detail(book_id):
             synopsis = _fetch_ol_description(book['ol_key'])
             _record_synopsis_result(book_id, failed=synopsis is None)
             if synopsis is not None:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE books SET synopsis=%s WHERE id=%s",
+                with closing(conn.cursor()) as cur:
+                    cur.execute("UPDATE books SET synopsis=? WHERE id=?",
                                 (synopsis, book_id))
                 conn.commit()
                 book['synopsis'] = synopsis
@@ -495,7 +522,7 @@ def api_book_detail(book_id):
 def autocomplete_authors():
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT DISTINCT author FROM books WHERE author IS NOT NULL ORDER BY author"
             )
@@ -509,7 +536,7 @@ def autocomplete_authors():
 def autocomplete_series():
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT DISTINCT series FROM books "
                 "WHERE series IS NOT NULL AND series != '' ORDER BY series"
@@ -524,7 +551,7 @@ def autocomplete_series():
 def authors():
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT author, COUNT(*) as book_count FROM books "
                 "WHERE author IS NOT NULL GROUP BY author ORDER BY author"
@@ -539,10 +566,10 @@ def authors():
 def author_books(author):
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT id, title, series, series_num FROM books "
-                "WHERE author = %s ORDER BY series, series_num, title",
+                "WHERE author = ? ORDER BY series, series_num, title",
                 (author,)
             )
             books = cur.fetchall()
@@ -555,7 +582,7 @@ def author_books(author):
 def series_list():
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT series, COUNT(*) as book_count FROM books "
                 "WHERE series IS NOT NULL AND series != '' "
@@ -571,13 +598,13 @@ def series_list():
 def series_books(series_name):
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT id, author, title, series_num FROM books "
-                "WHERE series = %s "
+                "WHERE series = ? "
                 "ORDER BY "
                 "  CASE WHEN series_num IS NULL OR series_num = '' THEN 1 ELSE 0 END, "
-                "  CAST(series_num AS DECIMAL) ASC, "
+                "  CAST(series_num AS REAL) ASC, "
                 "  series_num ASC, title ASC",
                 (series_name,)
             )
@@ -680,13 +707,13 @@ def admin_settings():
 def series_edit(series_name):
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 "SELECT id, author, title, series, series_num, isbn FROM books "
-                "WHERE series = %s "
+                "WHERE series = ? "
                 "ORDER BY "
                 "  CASE WHEN series_num IS NULL OR series_num = '' THEN 1 ELSE 0 END, "
-                "  CAST(series_num AS DECIMAL) ASC, "
+                "  CAST(series_num AS REAL) ASC, "
                 "  series_num ASC, title ASC",
                 (series_name,)
             )
@@ -729,20 +756,20 @@ def series_edit(series_name):
             return redirect(url_for('series_books', series_name=series_name))
 
         # All updates in one transaction: Apply commits everything or nothing
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             for bid, (author, title, series, series_num, isbn), isbn_changed in updates:
                 if isbn_changed:
                     # Same behavior as the single-book edit form:
                     # refresh cover/work identity, clear cached synopsis
                     cover_id, ol_key = _lookup_isbn(isbn) if isbn else (None, None)
                     cur.execute(
-                        "UPDATE books SET author=%s, title=%s, series=%s, series_num=%s, "
-                        "isbn=%s, cover_id=%s, ol_key=%s, synopsis=NULL WHERE id=%s",
+                        "UPDATE books SET author=?, title=?, series=?, series_num=?, "
+                        "isbn=?, cover_id=?, ol_key=?, synopsis=NULL WHERE id=?",
                         (author, title, series, series_num, isbn, cover_id, ol_key, bid))
                 else:
                     cur.execute(
-                        "UPDATE books SET author=%s, title=%s, series=%s, series_num=%s "
-                        "WHERE id=%s",
+                        "UPDATE books SET author=?, title=?, series=?, series_num=? "
+                        "WHERE id=?",
                         (author, title, series, series_num, bid))
         conn.commit()
     finally:
@@ -789,7 +816,7 @@ def _validate_csv_row(rownum, row):
 def export_books():
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute(
                 f"SELECT {', '.join(_CSV_COLUMNS)} FROM books ORDER BY id")
             rows = cur.fetchall()
@@ -851,12 +878,12 @@ def import_books():
     # Stage into a scratch table; nothing touches `books` until confirmed
     conn = get_db()
     try:
-        with conn.cursor() as cur:
+        with closing(conn.cursor()) as cur:
             cur.execute("DROP TABLE IF EXISTS books_import")
-            cur.execute("CREATE TABLE books_import LIKE books")
+            cur.execute(f"CREATE TABLE books_import ({_BOOKS_COLUMNS_DDL})")
             cur.executemany(
                 f"INSERT INTO books_import ({', '.join(_CSV_COLUMNS)}) "
-                f"VALUES ({', '.join(['%s'] * len(_CSV_COLUMNS))})",
+                f"VALUES ({', '.join(['?'] * len(_CSV_COLUMNS))})",
                 records)
             cur.execute("SELECT COUNT(*) AS cnt FROM books")
             current = cur.fetchone()['cnt']
@@ -873,17 +900,19 @@ def import_books_confirm():
     _check_csrf()
     conn = get_db()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SHOW TABLES LIKE 'books_import'")
+        with closing(conn.cursor()) as cur:
+            cur.execute("SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name='books_import'")
             if not cur.fetchone():
                 flash('Nothing staged — upload a CSV first', 'warning')
                 return redirect(url_for('import_books'))
             cur.execute("SELECT COUNT(*) AS cnt FROM books_import")
             staged = cur.fetchone()['cnt']
-            # Atomic swap; previous data survives as books_old until the
-            # next import replaces it
+            # Swap inside the transaction (SQLite DDL is transactional);
+            # previous data survives as books_old until the next import
             cur.execute("DROP TABLE IF EXISTS books_old")
-            cur.execute("RENAME TABLE books TO books_old, books_import TO books")
+            cur.execute("ALTER TABLE books RENAME TO books_old")
+            cur.execute("ALTER TABLE books_import RENAME TO books")
         conn.commit()
     finally:
         conn.close()
@@ -918,10 +947,10 @@ def add_book():
         cover_id, ol_key = _lookup_isbn(isbn) if isbn else (None, None)
         conn = get_db()
         try:
-            with conn.cursor() as cur:
+            with closing(conn.cursor()) as cur:
                 cur.execute(
                     "INSERT INTO books (author, title, series, series_num, isbn, cover_id, ol_key) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (author, title, series, series_num, isbn, cover_id, ol_key)
                 )
             conn.commit()
@@ -937,9 +966,10 @@ def add_book():
 def edit_book(book_id):
     conn = get_db()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM books WHERE id = %s", (book_id,))
+        with closing(conn.cursor()) as cur:
+            cur.execute("SELECT * FROM books WHERE id = ?", (book_id,))
             book = cur.fetchone()
+        book = dict(book) if book else None
         if not book:
             flash('Book not found', 'warning')
             return redirect(url_for('index'))
@@ -953,18 +983,18 @@ def edit_book(book_id):
             if not author or not title:
                 flash('Author and title are required', 'warning')
                 return render_template('book_form.html', book=book, action='Edit', book_id=book_id)
-            with conn.cursor() as cur:
+            with closing(conn.cursor()) as cur:
                 if isbn != book.get('isbn'):
                     # ISBN changed: refresh cover/work identity, clear cached synopsis
                     cover_id, ol_key = _lookup_isbn(isbn) if isbn else (None, None)
                     cur.execute(
-                        "UPDATE books SET author=%s, title=%s, series=%s, series_num=%s, "
-                        "isbn=%s, cover_id=%s, ol_key=%s, synopsis=NULL WHERE id=%s",
+                        "UPDATE books SET author=?, title=?, series=?, series_num=?, "
+                        "isbn=?, cover_id=?, ol_key=?, synopsis=NULL WHERE id=?",
                         (author, title, series, series_num, isbn, cover_id, ol_key, book_id)
                     )
                 else:
                     cur.execute(
-                        "UPDATE books SET author=%s, title=%s, series=%s, series_num=%s WHERE id=%s",
+                        "UPDATE books SET author=?, title=?, series=?, series_num=? WHERE id=?",
                         (author, title, series, series_num, book_id)
                     )
             conn.commit()
@@ -981,8 +1011,8 @@ def delete_book(book_id):
     _check_csrf()
     conn = get_db()
     try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM books WHERE id = %s", (book_id,))
+        with closing(conn.cursor()) as cur:
+            cur.execute("DELETE FROM books WHERE id = ?", (book_id,))
         conn.commit()
     finally:
         conn.close()
