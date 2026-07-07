@@ -504,6 +504,10 @@ def login():
         if _is_rate_limited(request.remote_addr):
             flash('Too many login attempts — please wait a few minutes.', 'danger')
             return render_template('login.html', next=request.form.get('next', ''))
+        # Credentials must never be checked against a stale cache: a password
+        # changed in another worker must take effect immediately. Login is
+        # rate-limited, so the forced DB read costs nothing.
+        _load_settings(force=True)
         username_ok = hmac.compare_digest(
             request.form.get('username', ''), _get_admin_username())
         password_ok = _check_admin_password(request.form.get('password', ''))
