@@ -1,0 +1,52 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: books
+      MYSQL_USER: books_user
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+      # Imported automatically on first run only (skipped if volume already exists)
+      - ./books.sql:/docker-entrypoint-initdb.d/books.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DB_HOST: db
+      DB_USER: books_user
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: books
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      # The hash must be single-quoted in .env so its '$' chars survive
+      # compose parsing (single-quoted env-file values are taken literally)
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      TLS_CERT: ${TLS_CERT:-}
+      TLS_KEY: ${TLS_KEY:-}
+      HTTPS: ${HTTPS:-false}
+      PROXY_FIX: ${PROXY_FIX:-false}
+    volumes:
+      # TLS certs live outside the image. Mounted at /app/certs so relative
+      # paths in .env (TLS_CERT=certs/...) resolve for both this container
+      # (cwd /app) and the bare-metal systemd instance (cwd = project dir).
+      # The key on the host must be readable by uid/gid 10001 (container appuser)
+      - ./certs:/app/certs:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:

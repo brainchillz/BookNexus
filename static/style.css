@@ -1,0 +1,41 @@
+body {
+    background-color: var(--bs-tertiary-bg);
+    font-size: 0.9rem;
+}
+
+.navbar-brand {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
+
+/* DataTables search box */
+div.dataTables_filter input {
+    margin-left: 0.5em;
+    min-width: 280px;
+}
+
+/* Tighten up DataTables wrapper */
+div.dataTables_wrapper div.dataTables_length select {
+    min-width: auto;
+}
+
+.table th {
+    white-space: nowrap;
+    background-color: #343a40;
+    color: #fff;
+}
+
+.table-sm td, .table-sm th {
+    padding: 0.35rem 0.5rem;
+}
+
+/* Author / series browse grid hover */
+.author-link:hover, .series-link:hover {
+    background-color: var(--bs-secondary-bg);
+    border-color: var(--bs-secondary-color) !important;
+}
+
+/* Keep action buttons from wrapping */
+.text-nowrap form {
+    display: inline;
+}

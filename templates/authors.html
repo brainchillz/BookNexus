@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Authors — {{ site_title }}{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-4">Authors <span class="badge bg-secondary fs-6">{{ authors | length }}</span></h1>
+
+<div class="mb-3">
+    <input type="text" id="author-filter" class="form-control" placeholder="Filter authors...">
+</div>
+
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-2" id="author-list">
+    {% for a in authors %}
+    <div class="col author-item">
+        <a href="/authors/{{ a.author | urlencode }}"
+           class="d-flex justify-content-between align-items-center p-2 rounded border text-decoration-none text-body author-link">
+            <span>{{ a.author }}</span>
+            <span class="badge bg-secondary">{{ a.book_count }}</span>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$('#author-filter').on('input', function() {
+    var val = $(this).val().toLowerCase();
+    $('.author-item').each(function() {
+        var name = $(this).find('.author-link span:first').text().toLowerCase();
+        $(this).toggle(name.includes(val));
+    });
+});
+</script>
+{% endblock %}

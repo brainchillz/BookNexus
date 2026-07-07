@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ action }} Book — {{ site_title }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Books</a></li>
+        <li class="breadcrumb-item active">{{ action }} Book</li>
+    </ol>
+</nav>
+
+<div class="row">
+    <div class="col-md-7 col-lg-5">
+        <h1 class="h3 mb-4">{{ action }} Book</h1>
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="mb-3">
+                <label class="form-label fw-semibold">
+                    Author <span class="text-danger">*</span>
+                    <small class="text-muted fw-normal">(Last, First)</small>
+                </label>
+                <input type="text" name="author" class="form-control"
+                       list="author-list" autocomplete="off"
+                       value="{{ book.author or '' if book else '' }}" required>
+                <datalist id="author-list"></datalist>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">
+                    Title <span class="text-danger">*</span>
+                </label>
+                <input type="text" name="title" class="form-control"
+                       value="{{ book.title or '' if book else '' }}" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">
+                    Series <small class="text-muted fw-normal">(optional)</small>
+                </label>
+                <input type="text" name="series" class="form-control"
+                       list="series-list" autocomplete="off"
+                       value="{{ book.series or '' if book else '' }}">
+                <datalist id="series-list"></datalist>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">
+                    Series # <small class="text-muted fw-normal">(optional)</small>
+                </label>
+                <input type="text" name="series_num" class="form-control"
+                       style="max-width:120px"
+                       value="{{ book.series_num or '' if book else '' }}">
+            </div>
+            <div class="mb-4">
+                <label class="form-label fw-semibold">
+                    ISBN <small class="text-muted fw-normal">(optional — enables cover image &amp; synopsis)</small>
+                </label>
+                <input type="text" name="isbn" class="form-control"
+                       style="max-width:220px"
+                       value="{{ book.isbn or '' if book else '' }}">
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">{{ action }} Book</button>
+                <a href="/" class="btn btn-outline-secondary">Cancel</a>
+                {% if action == 'Edit' and book_id %}
+                <form method="post" action="/books/{{ book_id }}/delete" class="ms-auto"
+                      onsubmit="return confirm('Delete this book permanently?')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-danger">Delete Book</button>
+                </form>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$(function() {
+    $.get('/api/autocomplete/authors', function(authors) {
+        var list = $('#author-list');
+        authors.forEach(function(a) {
+            list.append($('<option>').val(a));
+        });
+    });
+
+    $.get('/api/autocomplete/series', function(series) {
+        var list = $('#series-list');
+        series.forEach(function(s) {
+            list.append($('<option>').val(s));
+        });
+    });
+});
+</script>
+{% endblock %}

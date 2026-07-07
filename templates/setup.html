@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Setup — {{ site_title }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+        <div class="card shadow-sm">
+            <div class="card-body p-4">
+                <h1 class="h4 mb-1">Welcome!</h1>
+                <p class="text-muted small mb-4">
+                    Before anyone can use the library, create the admin account.
+                    This page disappears once setup is complete.
+                </p>
+                <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="mb-3">
+                        <label class="form-label">Admin username</label>
+                        <input type="text" name="username" class="form-control"
+                               value="{{ form.get('username', 'admin') }}" autocomplete="username">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password <span class="text-muted small">(at least 8 characters)</span></label>
+                        <input type="password" name="password" class="form-control"
+                               autocomplete="new-password" required minlength="8">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Confirm password</label>
+                        <input type="password" name="confirm" class="form-control"
+                               autocomplete="new-password" required minlength="8">
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label">Library title <span class="text-muted small">(shown in the navbar and page titles)</span></label>
+                        <input type="text" name="site_title" class="form-control"
+                               value="{{ form.get('site_title', '') }}" placeholder="{{ default_title }}">
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Finish setup</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

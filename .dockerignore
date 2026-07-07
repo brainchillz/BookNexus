@@ -1,0 +1,10 @@
+.env
+.git/
+.claude/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+README.md
+.env.example

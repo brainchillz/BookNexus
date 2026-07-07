@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ series }} — {{ site_title }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/series">Series</a></li>
+        <li class="breadcrumb-item"><a href="/series/{{ series | urlencode }}">{{ series }}</a></li>
+        <li class="breadcrumb-item active">Edit all</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+        <h1 class="h3 mb-0">Edit: {{ series }}</h1>
+        <small class="text-muted">{{ books | length }} book{{ 's' if books | length != 1 }}
+            — changed fields are highlighted; nothing is saved until Apply</small>
+    </div>
+</div>
+
+{% if errors %}
+<div class="alert alert-danger">
+    <h6 class="alert-heading">Nothing was saved — fix these first:</h6>
+    <ul class="mb-0 small">
+        {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<form method="post" id="series-edit-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <table class="table table-striped table-sm align-middle">
+        <thead>
+            <tr>
+                <th style="width:80px">#</th>
+                <th>Title</th>
+                <th style="width:22%">Author</th>
+                <th style="width:18%">Series</th>
+                <th style="width:14%">ISBN</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for book in books %}
+            {% set bid = book.id | string %}
+            {% set fd = formdata.get(bid, {}) %}
+            <tr>
+                <td>
+                    <input type="hidden" name="book_id" value="{{ book.id }}">
+                    <input type="text" class="form-control form-control-sm" name="series_num-{{ book.id }}"
+                           value="{{ fd.get('series_num', book.series_num or '') }}">
+                </td>
+                <td><input type="text" class="form-control form-control-sm" name="title-{{ book.id }}"
+                           value="{{ fd.get('title', book.title or '') }}" required></td>
+                <td><input type="text" class="form-control form-control-sm" name="author-{{ book.id }}"
+                           value="{{ fd.get('author', book.author or '') }}" required></td>
+                <td><input type="text" class="form-control form-control-sm" name="series-{{ book.id }}"
+                           value="{{ fd.get('series', book.series or '') }}"></td>
+                <td><input type="text" class="form-control form-control-sm" name="isbn-{{ book.id }}"
+                           value="{{ fd.get('isbn', book.isbn or '') }}"></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="d-flex gap-2 align-items-center">
+        <button type="submit" class="btn btn-primary">Apply changes</button>
+        <a href="/series/{{ series | urlencode }}" class="btn btn-outline-secondary">Cancel</a>
+        <span id="dirty-count" class="text-muted small"></span>
+    </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$(function() {
+    var form = document.getElementById('series-edit-form');
+    var submitting = false;
+
+    function refresh() {
+        var dirty = 0;
+        $(form).find('input[type=text]').each(function() {
+            var changed = this.value !== this.defaultValue;
+            $(this).toggleClass('border-warning bg-warning-subtle', changed);
+            if (changed) dirty++;
+        });
+        $('#dirty-count').text(dirty ? dirty + ' field' + (dirty > 1 ? 's' : '') + ' changed' : '');
+        return dirty;
+    }
+
+    $(form).on('input', 'input[type=text]', refresh);
+    $(form).on('submit', function() { submitting = true; });
+    window.addEventListener('beforeunload', function(e) {
+        if (!submitting && refresh() > 0) e.preventDefault();
+    });
+    refresh();
+});
+</script>
+{% endblock %}
