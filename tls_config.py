@@ -35,7 +35,7 @@ def disabled_marker():
     return os.path.join(tls_dir(), 'disabled')
 
 
-def generate_self_signed(hostname='booknexus', extra_ip=None):
+def generate_self_signed(hostname='book-library', extra_ip=None):
     """Generate a 10-year self-signed pair into the data certs dir."""
     os.makedirs(tls_dir(), exist_ok=True)
     san = f'DNS:{hostname},DNS:localhost,IP:127.0.0.1'

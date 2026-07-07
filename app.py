@@ -783,7 +783,7 @@ def tls_self_signed():
     is_ip = re.fullmatch(r'[\d.]+|\[[0-9a-fA-F:]+\]', host)
     try:
         tls_config.generate_self_signed(
-            hostname='booknexus' if is_ip else host,
+            hostname='book-library' if is_ip else host,
             extra_ip=host if is_ip else None)
     except Exception as e:
         flash(f'Could not generate a certificate: {e}', 'danger')
