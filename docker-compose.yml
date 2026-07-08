@@ -8,7 +8,9 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-8000}:8000"
+      # APP_BIND=127.0.0.1 publishes on loopback only, for running behind a
+      # reverse proxy on the same host; the default stays LAN-reachable.
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8000}:8000"
     environment:
       SECRET_KEY: ${SECRET_KEY}
       DB_PATH: data/books.db
