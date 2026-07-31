@@ -32,6 +32,38 @@
 
         <div class="card shadow-sm mb-4">
             <div class="card-body p-4">
+                <h2 class="h6">Cindy's Books app sync</h2>
+                <p class="text-muted small mb-3">
+                    Generate a token, then enter this server's address and the
+                    token in the Cindy's Books iOS app to sync your library.
+                </p>
+                {% if new_api_token %}
+                <div class="alert alert-success">
+                    <div class="fw-semibold mb-1">New sync token — copy it now, it won't be shown again:</div>
+                    <input type="text" class="form-control font-monospace" readonly
+                           value="{{ new_api_token }}" onclick="this.select()">
+                </div>
+                {% endif %}
+                <p class="small mb-3">
+                    Status:
+                    {% if has_api_token %}
+                        <span class="text-success">a sync token is set.</span>
+                        Generating a new one revokes the old token.
+                    {% else %}
+                        <span class="text-muted">no sync token yet.</span>
+                    {% endif %}
+                </p>
+                <form method="post" action="/admin/settings/api-token">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-primary">
+                        {{ 'Generate new token' if has_api_token else 'Generate sync token' }}
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-4">
+            <div class="card-body p-4">
                 <h2 class="h6">HTTPS certificate</h2>
                 {% if tls.proxy_mode %}
                 <p class="text-muted small mb-0">TLS is terminated by your reverse proxy

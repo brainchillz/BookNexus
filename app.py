@@ -4,6 +4,7 @@ import os
 import re
 import json
 import signal
+import hashlib
 import sqlite3
 import ssl
 import subprocess
@@ -64,7 +65,10 @@ _BOOKS_COLUMNS_DDL = """
     isbn TEXT,
     cover_id INTEGER,
     ol_key TEXT,
-    synopsis TEXT
+    synopsis TEXT,
+    uuid TEXT,
+    updated_at TEXT,
+    "read" INTEGER NOT NULL DEFAULT 0
 """
 
 _SCHEMA = f"""
@@ -73,13 +77,63 @@ CREATE TABLE IF NOT EXISTS settings (
     name TEXT NOT NULL PRIMARY KEY,
     value TEXT
 );
+-- Tombstones for two-way sync: a deleted book's uuid + when. Kept separate so
+-- the existing read queries don't need a `deleted_at IS NULL` filter.
+CREATE TABLE IF NOT EXISTS deleted_books (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    deleted_at TEXT NOT NULL
+);
 """
+
+# SQL fragments shared by the schema migration and the sync endpoint.
+# A v4-format UUID built from random bytes (SQLite has no uuid()).
+_UUID_SQL = (
+    "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || "
+    "substr(hex(randomblob(2)), 2) || '-' || "
+    "substr('89ab', 1 + (abs(random()) % 4), 1) || "
+    "substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))"
+)
+# UTC timestamp with millisecond precision; lexicographic order == chronological.
+_NOW_SQL = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
 
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _table_columns(conn, table):
+    return {r['name'] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _ensure_sync_scaffolding(conn):
+    """Idempotent: the uuid index, the uuid-on-insert trigger, and backfill of
+    uuid/updated_at for any rows missing them. Safe to run on every start and
+    after a CSV-import table swap (which leaves the new `books` without them)."""
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_books_uuid ON books(uuid)")
+    conn.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS books_uuid_ai AFTER INSERT ON books
+        WHEN NEW.uuid IS NULL
+        BEGIN
+            UPDATE books SET uuid = {_UUID_SQL} WHERE id = NEW.id;
+        END
+    """)
+    conn.execute(f"UPDATE books SET uuid = {_UUID_SQL} WHERE uuid IS NULL")
+    conn.execute(f"UPDATE books SET updated_at = {_NOW_SQL} WHERE updated_at IS NULL")
+
+
+def _migrate_db(conn):
+    """Add sync columns to an existing `books` table (fresh installs already
+    have them from the DDL), then ensure the sync scaffolding."""
+    cols = _table_columns(conn, 'books')
+    if 'uuid' not in cols:
+        conn.execute("ALTER TABLE books ADD COLUMN uuid TEXT")
+    if 'updated_at' not in cols:
+        conn.execute("ALTER TABLE books ADD COLUMN updated_at TEXT")
+    if 'read' not in cols:
+        conn.execute('ALTER TABLE books ADD COLUMN "read" INTEGER NOT NULL DEFAULT 0')
+    _ensure_sync_scaffolding(conn)
 
 
 def _init_db():
@@ -89,6 +143,7 @@ def _init_db():
         # WAL: readers and the (single) writer never block each other
         conn.execute('PRAGMA journal_mode=WAL')
         conn.executescript(_SCHEMA)
+        _migrate_db(conn)
         conn.commit()
     finally:
         conn.close()
@@ -838,7 +893,19 @@ def admin_settings():
                     admin_password_hash=generate_password_hash(new))
                 flash('Password changed', 'success')
         return redirect(url_for('admin_settings'))
-    return render_template('settings.html', tls=_tls_state())
+    return render_template('settings.html', tls=_tls_state(),
+                           has_api_token=_has_api_token(),
+                           new_api_token=session.pop('new_api_token', None))
+
+
+@app.route('/admin/settings/api-token', methods=['POST'])
+@login_required
+def admin_generate_api_token():
+    """Generate a new sync token for the Cindy's Books app. Shown only once (via
+    the session, on the redirect); generating again revokes the previous one."""
+    _check_csrf()
+    session['new_api_token'] = _generate_api_token()
+    return redirect(url_for('admin_settings'))
 
 
 @app.route('/series/<path:series_name>/edit', methods=['GET', 'POST'])
@@ -903,11 +970,11 @@ def series_edit(series_name):
                     cover_id, ol_key = _lookup_isbn(isbn) if isbn else (None, None)
                     cur.execute(
                         "UPDATE books SET author=?, title=?, series=?, series_num=?, "
-                        "isbn=?, cover_id=?, ol_key=?, synopsis=NULL WHERE id=?",
+                        f"isbn=?, cover_id=?, ol_key=?, synopsis=NULL, updated_at={_NOW_SQL} WHERE id=?",
                         (author, title, series, series_num, isbn, cover_id, ol_key, bid))
                 else:
                     cur.execute(
-                        "UPDATE books SET author=?, title=?, series=?, series_num=? "
+                        f"UPDATE books SET author=?, title=?, series=?, series_num=?, updated_at={_NOW_SQL} "
                         "WHERE id=?",
                         (author, title, series, series_num, bid))
         conn.commit()
@@ -1052,6 +1119,11 @@ def import_books_confirm():
             cur.execute("DROP TABLE IF EXISTS books_old")
             cur.execute("ALTER TABLE books RENAME TO books_old")
             cur.execute("ALTER TABLE books_import RENAME TO books")
+        # The rename carried the uuid index/trigger to books_old; recreate them
+        # on the new books and give the imported rows uuids + updated_at so they
+        # sync. (CSV has no uuid column, so an import re-keys the library — run
+        # the initial link afterward if syncing.)
+        _ensure_sync_scaffolding(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1088,8 +1160,8 @@ def add_book():
         try:
             with closing(conn.cursor()) as cur:
                 cur.execute(
-                    "INSERT INTO books (author, title, series, series_num, isbn, cover_id, ol_key) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO books (author, title, series, series_num, isbn, cover_id, ol_key, updated_at) "
+                    f"VALUES (?, ?, ?, ?, ?, ?, ?, {_NOW_SQL})",
                     (author, title, series, series_num, isbn, cover_id, ol_key)
                 )
             conn.commit()
@@ -1128,12 +1200,12 @@ def edit_book(book_id):
                     cover_id, ol_key = _lookup_isbn(isbn) if isbn else (None, None)
                     cur.execute(
                         "UPDATE books SET author=?, title=?, series=?, series_num=?, "
-                        "isbn=?, cover_id=?, ol_key=?, synopsis=NULL WHERE id=?",
+                        f"isbn=?, cover_id=?, ol_key=?, synopsis=NULL, updated_at={_NOW_SQL} WHERE id=?",
                         (author, title, series, series_num, isbn, cover_id, ol_key, book_id)
                     )
                 else:
                     cur.execute(
-                        "UPDATE books SET author=?, title=?, series=?, series_num=? WHERE id=?",
+                        f"UPDATE books SET author=?, title=?, series=?, series_num=?, updated_at={_NOW_SQL} WHERE id=?",
                         (author, title, series, series_num, book_id)
                     )
             conn.commit()
@@ -1151,12 +1223,162 @@ def delete_book(book_id):
     conn = get_db()
     try:
         with closing(conn.cursor()) as cur:
+            cur.execute("SELECT uuid FROM books WHERE id = ?", (book_id,))
+            row = cur.fetchone()
             cur.execute("DELETE FROM books WHERE id = ?", (book_id,))
+            # Record a tombstone so the delete propagates to synced devices.
+            if row and row['uuid']:
+                cur.execute(
+                    f"INSERT INTO deleted_books (uuid, deleted_at) VALUES (?, {_NOW_SQL}) "
+                    "ON CONFLICT(uuid) DO UPDATE SET deleted_at = excluded.deleted_at",
+                    (row['uuid'],))
         conn.commit()
     finally:
         conn.close()
     flash('Book deleted', 'success')
     return redirect(url_for('index'))
+
+
+# ── Two-way sync API (v1) ─────────────────────────────────────────
+# Token-authenticated JSON for the Cindy's Books iOS app. The token is a
+# high-entropy secret, so a fast SHA-256 hash is safe (unlike a password).
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _generate_api_token() -> str:
+    """Create a new sync token, store its hash, and return the plaintext once."""
+    token = secrets.token_urlsafe(32)
+    _save_settings(api_token_sha256=_hash_token(token))
+    return token
+
+
+def _has_api_token() -> bool:
+    return bool(_load_settings().get('api_token_sha256'))
+
+
+def _check_api_token(token: str) -> bool:
+    stored = _load_settings().get('api_token_sha256', '')
+    if not stored or not token:
+        return False
+    return hmac.compare_digest(stored, _hash_token(token))
+
+
+def token_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        auth = request.headers.get('Authorization', '')
+        token = auth[7:] if auth.startswith('Bearer ') else ''
+        if not _check_api_token(token):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+
+_SYNC_FIELDS = ('author', 'title', 'series', 'series_num', 'isbn',
+                'cover_id', 'ol_key', 'synopsis')
+
+
+def _sync_book_json(row) -> dict:
+    d = {k: row[k] for k in _SYNC_FIELDS}
+    d['uuid'] = row['uuid']
+    d['read'] = bool(row['read'])
+    d['updated_at'] = row['updated_at']
+    return d
+
+
+def _apply_client_change(cur, c):
+    """Upsert one incoming book by uuid, last-writer-wins on updated_at."""
+    uuid = c.get('uuid')
+    up = c.get('updated_at') or ''
+    if not uuid or not up:
+        return
+    vals = (c.get('author'), c.get('title'), c.get('series'), c.get('series_num'),
+            c.get('isbn'), c.get('cover_id'), c.get('ol_key'), c.get('synopsis'),
+            1 if c.get('read') else 0, up)
+    existing = cur.execute("SELECT updated_at FROM books WHERE uuid = ?", (uuid,)).fetchone()
+    if existing:
+        if up >= (existing['updated_at'] or ''):
+            cur.execute(
+                'UPDATE books SET author=?, title=?, series=?, series_num=?, isbn=?, '
+                'cover_id=?, ol_key=?, synopsis=?, "read"=?, updated_at=? WHERE uuid=?',
+                vals + (uuid,))
+        return
+    tomb = cur.execute("SELECT deleted_at FROM deleted_books WHERE uuid = ?", (uuid,)).fetchone()
+    if tomb and (tomb['deleted_at'] or '') >= up:
+        return  # a newer delete wins → stay deleted
+    cur.execute(
+        'INSERT INTO books (uuid, author, title, series, series_num, isbn, cover_id, '
+        'ol_key, synopsis, "read", updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (uuid,) + vals)
+    if tomb:
+        cur.execute("DELETE FROM deleted_books WHERE uuid = ?", (uuid,))  # resurrected
+
+
+def _apply_client_deletion(cur, d):
+    """Apply one incoming delete, last-writer-wins vs any local edit."""
+    uuid = d.get('uuid')
+    da = d.get('deleted_at') or ''
+    if not uuid or not da:
+        return
+    existing = cur.execute("SELECT updated_at FROM books WHERE uuid = ?", (uuid,)).fetchone()
+    if existing and (existing['updated_at'] or '') > da:
+        return  # edited after the delete → edit wins
+    cur.execute("DELETE FROM books WHERE uuid = ?", (uuid,))
+    cur.execute(
+        "INSERT INTO deleted_books (uuid, deleted_at) VALUES (?, ?) "
+        "ON CONFLICT(uuid) DO UPDATE SET deleted_at = excluded.deleted_at "
+        "WHERE excluded.deleted_at > deleted_books.deleted_at",
+        (uuid, da))
+
+
+@app.route('/api/v1/ping')
+@token_required
+def api_v1_ping():
+    conn = get_db()
+    try:
+        count = conn.execute("SELECT COUNT(*) AS c FROM books").fetchone()['c']
+    finally:
+        conn.close()
+    return jsonify({'library_name': _site_title(), 'count': count})
+
+
+@app.route('/api/v1/sync', methods=['POST'])
+@token_required
+def api_v1_sync():
+    payload = request.get_json(silent=True) or {}
+    since = payload.get('since')
+    changes = payload.get('changes') or []
+    deletions = payload.get('deletions') or []
+
+    conn = get_db()
+    try:
+        with closing(conn.cursor()) as cur:
+            for c in changes:
+                _apply_client_change(cur, c)
+            for d in deletions:
+                _apply_client_deletion(cur, d)
+            if since:
+                book_rows = cur.execute(
+                    "SELECT * FROM books WHERE updated_at > ? ORDER BY updated_at", (since,)).fetchall()
+                tomb_rows = cur.execute(
+                    "SELECT uuid, deleted_at FROM deleted_books WHERE deleted_at > ? ORDER BY deleted_at",
+                    (since,)).fetchall()
+            else:
+                book_rows = cur.execute("SELECT * FROM books ORDER BY updated_at").fetchall()
+                tomb_rows = cur.execute(
+                    "SELECT uuid, deleted_at FROM deleted_books ORDER BY deleted_at").fetchall()
+            server_time = cur.execute(f"SELECT {_NOW_SQL} AS now").fetchone()['now']
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        'server_time': server_time,
+        'changes': [_sync_book_json(r) for r in book_rows],
+        'deletions': [{'uuid': r['uuid'], 'deleted_at': r['deleted_at']} for r in tomb_rows],
+    })
 
 
 if __name__ == '__main__':
