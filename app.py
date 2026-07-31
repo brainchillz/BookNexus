@@ -123,16 +123,25 @@ def _ensure_sync_scaffolding(conn):
     conn.execute(f"UPDATE books SET updated_at = {_NOW_SQL} WHERE updated_at IS NULL")
 
 
+def _add_column_if_missing(conn, name, ddl):
+    """Add a column, tolerating a concurrent worker that added it first.
+    Multiple gunicorn workers each run _init_db on boot, so the check-then-ALTER
+    can race; catching the duplicate-column error makes it safe."""
+    if name in _table_columns(conn, 'books'):
+        return
+    try:
+        conn.execute(f"ALTER TABLE books ADD COLUMN {ddl}")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e).lower():
+            raise
+
+
 def _migrate_db(conn):
     """Add sync columns to an existing `books` table (fresh installs already
     have them from the DDL), then ensure the sync scaffolding."""
-    cols = _table_columns(conn, 'books')
-    if 'uuid' not in cols:
-        conn.execute("ALTER TABLE books ADD COLUMN uuid TEXT")
-    if 'updated_at' not in cols:
-        conn.execute("ALTER TABLE books ADD COLUMN updated_at TEXT")
-    if 'read' not in cols:
-        conn.execute('ALTER TABLE books ADD COLUMN "read" INTEGER NOT NULL DEFAULT 0')
+    _add_column_if_missing(conn, 'uuid', 'uuid TEXT')
+    _add_column_if_missing(conn, 'updated_at', 'updated_at TEXT')
+    _add_column_if_missing(conn, 'read', '"read" INTEGER NOT NULL DEFAULT 0')
     _ensure_sync_scaffolding(conn)
 
 
